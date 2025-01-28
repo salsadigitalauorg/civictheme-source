@@ -27,6 +27,7 @@ const config = {
   build: false,
   watch: false,
   cli: false,
+  install: false,
   combine: false,
   styles: false,
   styles_editor: false,
@@ -42,7 +43,7 @@ const config = {
 }
 
 const flags = process.argv.slice(2)
-if (flags[0] !== 'cli') {
+if (flags[0] !== 'cli' && flags[0] !== 'install') {
   const buildType = ['build', 'watch']
   const buildWatchFlagCount = flags?.filter(f => buildType.indexOf(f) >= 0).length
 
@@ -65,14 +66,18 @@ if (flags[0] !== 'cli') {
       config[flag] = true
     })
   }
-} else {
+} else if (flags[0] == 'cli') {
   config.cli = true
+} else if (flags[0] == 'install') {
+  config.install = true
 }
 
 let startTime = new Date().getTime()
 let lastTime = null
 
 const PATH = import.meta.dirname
+
+const ISWIN = process.platform === 'win32'
 
 const THEME_NAME                = PATH.split('/').reverse()[0]
 const DIR_CIVICTHEME            = fullPath('../../contrib/civictheme/')
@@ -114,10 +119,10 @@ const JS_ASSET_IMPORTS          = [
                                   ]
 
 const CONSTANTS_FILE_OUT        = `${DIR_OUT}/constants.json`
-const CONSTANTS_SCSS_IMPORTER   = fullPath(`./.storybook/importer.scss_variables.js`)
-const CONSTANTS_BACKGROUND_UTIL = `${COMPONENT_DIR}/00-base/background/background.utils.js`
-const CONSTANTS_ICON_UTIL       = `${COMPONENT_DIR}/00-base/icon/icon.utils.js`
-const CONSTANTS_LOGO_UTIL       = `${COMPONENT_DIR}/02-molecules/logo/logo.utils.js`
+const CONSTANTS_SCSS_IMPORTER   = importURL(fullPath(`./.storybook/importer.scss_variables.js`))
+const CONSTANTS_BACKGROUND_UTIL = importURL(`${COMPONENT_DIR}/00-base/background/background.utils.js`)
+const CONSTANTS_ICON_UTIL       = importURL(`${COMPONENT_DIR}/00-base/icon/icon.utils.js`)
+const CONSTANTS_LOGO_UTIL       = importURL(`${COMPONENT_DIR}/02-molecules/logo/logo.utils.js`)
 
 if (config.build) {
   build()
@@ -131,6 +136,10 @@ if (config.cli) {
   cli()
 }
 
+if (config.install) {
+  install()
+}
+
 // ----------------------------------------------------------------------------- BUILD STEPS
 
 function buildOutDirectory() {
@@ -141,9 +150,15 @@ function buildOutDirectory() {
 
 function buildCombineDirectories() {
   if (config.combine && !config.base) {
-    runCommand(`rsync -a --delete ${DIR_UIKIT_COMPONENTS_IN}/ ${DIR_UIKIT_COPY_OUT}/`)
-    runCommand(`rsync -a --delete ${DIR_UIKIT_COPY_OUT}/ ${DIR_COMPONENTS_OUT}/`)
-    runCommand(`rsync -a ${DIR_COMPONENTS_IN}/ ${DIR_COMPONENTS_OUT}/`)
+    if (ISWIN) {
+      runCommand(`robocopy ${DIR_UIKIT_COMPONENTS_IN} ${DIR_UIKIT_COPY_OUT} /mir`)
+      runCommand(`robocopy ${DIR_UIKIT_COPY_OUT} ${DIR_COMPONENTS_OUT} /mir`)
+      runCommand(`robocopy ${DIR_COMPONENTS_IN} ${DIR_COMPONENTS_OUT} /mir`)
+    } else {
+      runCommand(`rsync -a --delete ${DIR_UIKIT_COMPONENTS_IN}/ ${DIR_UIKIT_COPY_OUT}/`)
+      runCommand(`rsync -a --delete ${DIR_UIKIT_COPY_OUT}/ ${DIR_COMPONENTS_OUT}/`)
+      runCommand(`rsync -a ${DIR_COMPONENTS_IN}/ ${DIR_COMPONENTS_OUT}/`)
+    }
     console.log(`Saved: Combined folders ${time()}`)
   }
 }
@@ -274,7 +289,11 @@ function buildJavascript() {
 
 function buildAssetsDirectory() {
   if (config.assets) {
-    runCommand(`rsync -a --delete --prune-empty-dirs --exclude .gitkeep --exclude js --exclude sass ${DIR_ASSETS_IN}/ ${DIR_ASSETS_OUT}/`)
+    if (ISWIN) {
+      runCommand(`robocopy ${DIR_ASSETS_IN} ${DIR_ASSETS_OUT} /s /purge /xf .gitkeep js sass`)
+    } else {
+      runCommand(`rsync -a --delete --prune-empty-dirs --exclude .gitkeep --exclude js --exclude sass ${DIR_ASSETS_IN}/ ${DIR_ASSETS_OUT}/`)
+    }
     console.log(`Saved: Assets ${time()}`)
   }
 }
@@ -344,26 +363,36 @@ function cli() {
   })
 }
 
+function install() {
+  if (ISWIN) {
+    runCommand(`robocopy .\\node_modules\\@civictheme\\uikit\\components\\ .\\components\\ /mir /unicode`)
+  } else {
+    runCommand(`rm -Rf components > /dev/null 2>&1 && cp -R node_modules/@civictheme/uikit/components components`)
+  }
+}
+
 // ----------------------------------------------------------------------------- UTILITIES
 
 function runCommand(command) {
-  execSync(command, (error, stdout, stderr) => {
-    if (error) {
-      console.log(`error: ${error.message}`)
-      return
+  try {
+    execSync(command)
+  } catch (err) {
+    if (command.indexOf('robocopy') === 0 && err.status < 2) {
+      // Do nothing. It was a success.
+      // https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/robocopy#exit-return-codes
+    } else {
+      // Was likely an issue. Print output.
+      console.log(err.stdout.toString('utf8'))
     }
-    if (stderr) {
-      console.log(`stderr: ${stderr}`)
-      return
-    }
-    if (stdout) {
-      console.log(stdout)
-    }
-  })
+  }
 }
 
 function getImportsFromGlob(path, cwd) {
-  return globSync(path, { cwd }).sort((a, b) => a.localeCompare(b)).map(i => `@import "${i}";`).join('\n')
+  return globSync(path, { cwd })
+    .sort((a, b) => a.localeCompare(b))
+    .map(i => i.replaceAll('\\', '/'))
+    .map(i => `@import "${i}";`)
+    .join('\n')
 }
 
 function loadStyleFile(path, cwd) {
@@ -385,6 +414,10 @@ function stripJS(js) {
 
 function fullPath(filepath) {
   return path.resolve(PATH, filepath)
+}
+
+function importURL(url) {
+  return `${ISWIN ? 'file://' : ''}${ISWIN ? url.replaceAll('\\', '/') : url}`
 }
 
 function time(full) {
